@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Sanal ortam
+venv/
+.venv/
+
+# Temp dosyalar
+temp_*
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Veritabanı (lokal)
+*.db
+
+# Ortam
+.env
+
+# OS
+Thumbs.db
+.DS_Store

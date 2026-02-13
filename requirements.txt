@@ -1,0 +1,45 @@
+# Sivas Belediyesi Akıllı Evrak Yönetim Sistemi
+# Gerekli Python Paketleri
+# *** TAM BAĞIMSIZ - Harici yazılım gerektirmez ***
+
+# Görüntü İşleme
+opencv-python
+opencv-contrib-python
+numpy
+Pillow
+
+# OCR - EasyOCR (Tesseract yerine, tam Python tabanlı)
+easyocr
+# EasyOCR bağımlılıkları (otomatik yüklenir):
+# - torch (PyTorch - deep learning framework)
+# - torchvision
+# - scikit-image
+# - python-bidi (Arapça/İbranice gibi sağdan-sola diller için)
+# - Pillow
+
+# PDF İşleme
+pypdf
+pdfplumber
+pdf2image
+reportlab
+
+# Web Framework - API
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Veri Modelleri ve Validasyon
+pydantic
+
+# Loglama ve Monitoring (opsiyonel)
+python-json-logger
+
+# Geliştirme ve Test (opsiyonel)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.1  # FastAPI test client için
+
+# NOT: 
+# EasyOCR ilk çalıştırmada dil modellerini (~100MB) otomatik indirir
+# Model dosyaları ~/.EasyOCR/model/ klasörüne kaydedilir
+# Internet bağlantısı sadece ilk kurulumda gereklidir
