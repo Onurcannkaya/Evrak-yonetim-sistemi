@@ -1487,10 +1487,18 @@ class DocumentProcessor:
                 if not os.path.exists(image_input):
                     response["message"] = f"Dosya bulunamadı: {image_input}"
                     return response
-                image = cv2.imread(image_input)
-                if image is None:
-                    response["message"] = f"Görüntü okunamadı: {image_input}"
+                
+                # FIX: cv2.imread Türkçe karakterlerde başarısız oluyor
+                # PIL kullanıp sonra OpenCV'ye çeviriyoruz
+                try:
+                    from PIL import Image as PILImage
+                    pil_image = PILImage.open(image_input)
+                    # PIL RGB, OpenCV BGR kullanır
+                    image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+                except Exception as e:
+                    response["message"] = f"Görüntü okunamadı: {image_input} ({e})"
                     return response
+                    
                 image_path = image_input
             else:
                 # PIL Image olarak geldi (PDF sayfası)
