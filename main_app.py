@@ -772,6 +772,19 @@ class MainWindow(QMainWindow):
         if self.selected_index >= 0 and self._cached_pixmap and not self._cached_pixmap.isNull():
             self.preview_view.fitInView(self.preview_view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
+    def closeEvent(self, event):
+        """Uygulama kapanırken dosya kilitlerini serbest bırakır ve temp dosyaları temizler."""
+        # QPixmap dosya kilidini kaldır
+        self._cached_pixmap = None
+        self._cached_path = None
+        self.preview_view.scene.clear()
+        
+        # Temp dizinini temizle
+        from utils import cleanup_temp_dir
+        cleanup_temp_dir()
+        
+        super().closeEvent(event)
+
 
 # ═══════════ GİRİŞ NOKTASI ═══════════
 if __name__ == "__main__":

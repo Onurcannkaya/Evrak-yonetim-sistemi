@@ -1,9 +1,16 @@
 import os
 import sys
 import shutil
+import tempfile
+import atexit
+import logging
 from pathlib import Path
 from PIL import Image
 import fitz  # PyMuPDF
+
+logger = logging.getLogger("Utils")
+
+# ═══════════════════ YOLLAR ═══════════════════
 
 def get_base_dir() -> str:
     """Uygulamanın çalıştığı ana dizini döndürür (PyInstaller OneDir uyumlu)."""
@@ -19,9 +26,81 @@ def get_resource_dir() -> str:
         return os.path.dirname(sys.executable)
     return os.path.abspath(os.path.dirname(__file__))
 
-def ensure_dir(path: str) -> None:
-    """Belirtilen dizinin var olduğundan emin olur, yoksa oluşturur."""
-    os.makedirs(path, exist_ok=True)
+# ═══════════════════ GÜVENLİ TEMP DİZİNİ ═══════════════════
+
+_TEMP_DIR = None  # Modül seviyesinde tek referans
+
+def get_temp_dir() -> str:
+    """
+    Uygulama için güvenli bir geçici klasör döndürür.
+    Windows'ta %TEMP%/SivasBelediyesiDMS altına yazar.
+    Erişim hatası olursa kullanıcının Desktop'ına düşer.
+    """
+    global _TEMP_DIR
+    if _TEMP_DIR and os.path.isdir(_TEMP_DIR):
+        return _TEMP_DIR
+
+    candidates = [
+        os.path.join(tempfile.gettempdir(), "SivasBelediyesiDMS"),
+        os.path.join(os.path.expanduser("~"), "Desktop", "SivasBelediyesiDMS_temp"),
+        os.path.join(os.path.expanduser("~"), "SivasBelediyesiDMS_temp"),
+    ]
+
+    for path in candidates:
+        try:
+            os.makedirs(path, exist_ok=True)
+            # Yazma testi
+            test_file = os.path.join(path, ".write_test")
+            with open(test_file, "w") as f:
+                f.write("ok")
+            os.remove(test_file)
+            _TEMP_DIR = path
+            logger.info(f"Geçici dizin: {path}")
+            return path
+        except (PermissionError, OSError) as e:
+            logger.warning(f"Geçici dizin oluşturulamadı ({path}): {e}")
+            continue
+
+    # Son çare: tempfile modülünün kendi dizini
+    _TEMP_DIR = tempfile.gettempdir()
+    return _TEMP_DIR
+
+def cleanup_temp_dir():
+    """Uygulama kapanırken geçici dosyaları güvenle temizler."""
+    global _TEMP_DIR
+    if _TEMP_DIR and os.path.isdir(_TEMP_DIR):
+        try:
+            shutil.rmtree(_TEMP_DIR, ignore_errors=True)
+            logger.info(f"Geçici dizin temizlendi: {_TEMP_DIR}")
+        except Exception as e:
+            logger.warning(f"Geçici dizin temizlenemedi: {e}")
+
+# Uygulama kapanırken otomatik temizlik
+atexit.register(cleanup_temp_dir)
+
+# ═══════════════════ DİZİN YARDIMCILARI ═══════════════════
+
+def ensure_dir(path: str) -> str:
+    """
+    Belirtilen dizinin var olduğundan emin olur.
+    Erişim hatası alırsa alternatif yolları dener.
+    Her zaman gerçek kullanılabilir yolu döndürür.
+    """
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except (PermissionError, OSError) as e:
+        logger.warning(f"Dizin oluşturulamadı ({path}): {e}")
+        # Alternatif: temp dizini altında oluştur
+        fallback = os.path.join(get_temp_dir(), os.path.basename(path))
+        try:
+            os.makedirs(fallback, exist_ok=True)
+            logger.info(f"Alternatif dizin kullanılıyor: {fallback}")
+            return fallback
+        except Exception:
+            return get_temp_dir()
+
+# ═══════════════════ ARŞİVLEME ═══════════════════
 
 def archive_document(source_path: str, mahalle: str, ada: str) -> str:
     """
@@ -34,16 +113,18 @@ def archive_document(source_path: str, mahalle: str, ada: str) -> str:
     safe_mahalle = str(mahalle).strip().upper() if mahalle else "BILINMEYEN_MAHALLE"
     safe_ada = str(ada).strip().upper() if ada else "BILINMIYOR"
 
-    archive_base = Path("evrak_arsiv")
+    archive_base = Path(get_base_dir()) / "evrak_arsiv"
     target_dir = archive_base / safe_mahalle / f"ADA_{safe_ada}"
     
-    ensure_dir(str(target_dir))
+    actual_dir = ensure_dir(str(target_dir))
 
     filename = os.path.basename(source_path)
-    target_path = target_dir / filename
+    target_path = os.path.join(actual_dir, filename)
 
     shutil.copy2(source_path, target_path)
     return str(target_path)
+
+# ═══════════════════ PDF ═══════════════════
 
 def convert_pdf_to_image(pdf_path: str, output_path: str = None, page_num: int = 0) -> str:
     """PDF dosyasının belirtilen sayfasını JPEG resmine çevirir."""
@@ -57,8 +138,9 @@ def convert_pdf_to_image(pdf_path: str, output_path: str = None, page_num: int =
     pix = page.get_pixmap(dpi=300)
     
     if output_path is None:
-        base = os.path.splitext(pdf_path)[0]
-        output_path = f"{base}_preview.jpg"
+        # Preview'ları temp dizinine yaz (uygulama dizininden çıkar)
+        base = os.path.splitext(os.path.basename(pdf_path))[0]
+        output_path = os.path.join(get_temp_dir(), f"{base}_preview.jpg")
         
     pix.save(output_path)
     doc.close()
@@ -70,15 +152,18 @@ def get_preview_image(file_path: str) -> str:
         return convert_pdf_to_image(file_path)
     return file_path
 
+# ═══════════════════ THUMBNAIL ═══════════════════
+
 def generate_thumbnail(file_path: str, size: tuple = (120, 160)) -> str:
     """
     Dosyanın küçük resim (thumbnail) versiyonunu oluşturur.
-    Thumbnail'ler temp_previews/ klasörüne kaydedilir.
+    Thumbnail'ler Windows %TEMP% klasörüne kaydedilir (güvenli).
     """
-    ensure_dir("temp_previews")
+    thumb_dir = os.path.join(get_temp_dir(), "thumbnails")
+    ensure_dir(thumb_dir)
     
     base_name = os.path.splitext(os.path.basename(file_path))[0]
-    thumb_path = os.path.join("temp_previews", f"{base_name}_thumb.jpg")
+    thumb_path = os.path.join(thumb_dir, f"{base_name}_thumb.jpg")
     
     # Zaten üretilmişse tekrar üretme
     if os.path.exists(thumb_path):
@@ -95,16 +180,21 @@ def generate_thumbnail(file_path: str, size: tuple = (120, 160)) -> str:
             img = Image.open(thumb_path)
             img.thumbnail(size, Image.Resampling.LANCZOS)
             img.save(thumb_path, "JPEG", quality=85)
+            img.close()
         else:
             img = Image.open(file_path)
             img.thumbnail(size, Image.Resampling.LANCZOS)
             img.save(thumb_path, "JPEG", quality=85)
+            img.close()
     except Exception:
         # Hata olursa boş bir placeholder döndür
         img = Image.new("RGB", size, (60, 60, 60))
         img.save(thumb_path, "JPEG")
+        img.close()
     
     return thumb_path
+
+# ═══════════════════ YARDIMCILAR ═══════════════════
 
 def get_pdf_page_count(file_path: str) -> int:
     """PDF dosyasının sayfa sayısını döndürür. PDF değilse 1 döner."""
@@ -150,4 +240,12 @@ def extract_text_from_file(file_path: str) -> str:
     except Exception:
         return ""
 
-
+def release_pixmap(pixmap_ref):
+    """QPixmap nesnesini güvenli şekilde serbest bırakır (dosya kilidini kaldırır)."""
+    if pixmap_ref is not None:
+        try:
+            from PyQt6.QtGui import QPixmap
+            pixmap_ref = QPixmap()  # Boş pixmap ile değiştir → dosya kilidi kalkar
+        except Exception:
+            pass
+    return None
