@@ -46,12 +46,9 @@ class MainWindow(QMainWindow):
 
         apply_theme(self)
 
-        # Motorlar
-        try:
-            self.analyzer = DocumentAnalyzer()
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"AI Motoru başlatılamadı:\n{e}")
-            self.analyzer = None
+        # Motorlar — API Anahtarı yoksa kullanıcıya Ayarlar'ı aç
+        self.analyzer = None
+        self._init_analyzer()
 
         self.db = DatabaseManager()
 
@@ -395,6 +392,30 @@ class MainWindow(QMainWindow):
             self._fill_thumbnails()
             self._set_status("Belge silindi.")
             
+    def _init_analyzer(self):
+        """AI motorunu başlatır. API anahtarı yoksa Ayarlar ekranını açar."""
+        from ai_engine import get_api_key
+        key = get_api_key()
+        if not key:
+            QMessageBox.information(
+                self, "API Anahtarı Gerekli",
+                "Google Gemini API anahtarı tanımlanmamış.\n\n"
+                "Lütfen ⚙️ Ayarlar bölümünden API anahtarınızı girin.\n"
+                "Anahtar almak için: https://aistudio.google.com/apikey"
+            )
+            dialog = SettingsDialog(self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                key = get_api_key()
+
+        if key:
+            try:
+                self.analyzer = DocumentAnalyzer()
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"AI Motoru başlatılamadı:\n{e}")
+                self.analyzer = None
+        else:
+            self.analyzer = None
+
     def _action_settings(self):
         """Ayarlar diyaloğunu açar"""
         dialog = SettingsDialog(self)
