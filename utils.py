@@ -102,9 +102,50 @@ def ensure_dir(path: str) -> str:
 
 # ═══════════════════ ARŞİVLEME ═══════════════════
 
+def create_searchable_pdf(image_path: str, output_pdf_path: str, lang: str = "tur") -> bool:
+    """Görüntüyü Aranabilir (Searchable) PDF'e çevirir (Tesseract metin katmanıyla)."""
+    try:
+        import pytesseract
+        from PIL import Image
+        from config_manager import ConfigManager
+        
+        config = ConfigManager()
+        configured_tess = config.get("tesseract_cmd", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+        ocr_lang = config.get("ocr_language", lang)
+        
+        # Olası Tesseract yolları (Kullanıcı AppData'ya da kurmuş olabilir)
+        common_paths = [
+            configured_tess,
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Tesseract-OCR\tesseract.exe")
+        ]
+        
+        valid_tess_cmd = None
+        for p in common_paths:
+            if p and os.path.exists(p):
+                valid_tess_cmd = p
+                break
+                
+        if valid_tess_cmd:
+            pytesseract.pytesseract.tesseract_cmd = valid_tess_cmd
+        else:
+            logger.warning("Tesseract executable bulunamadı, Aranabilir PDF oluşturulamıyor.")
+            return False
+            
+        pdf_bytes = pytesseract.image_to_pdf_or_hocr(image_path, extension='pdf', lang=ocr_lang)
+        with open(output_pdf_path, 'wb') as f:
+            f.write(pdf_bytes)
+        logger.info(f"Aranabilir PDF oluşturuldu: {output_pdf_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Searchable PDF oluşturma hatası: {e}")
+        return False
+
 def archive_document(source_path: str, mahalle: str, ada: str) -> str:
     """
     Belgeyi işlem sonrası arşiv klasörüne taşır/kopyalar.
+    Eğer dosya resim ise, varsayılan olarak Tesseract ile Aranabilir PDF'e (Searchable PDF) dönüştürülüp öyle arşivlenir.
     Format: evrak_arsiv/{mahalle}/ADA_{ada}/{dosya_adi}
     """
     if not source_path or not os.path.exists(source_path):
@@ -119,9 +160,26 @@ def archive_document(source_path: str, mahalle: str, ada: str) -> str:
     actual_dir = ensure_dir(str(target_dir))
 
     filename = os.path.basename(source_path)
-    target_path = os.path.join(actual_dir, filename)
+    base_name, ext = os.path.splitext(filename)
+    
+    target_path = ""
+    
+    # Resim dosyası ise Aranabilir PDF yapmayı dene
+    if ext.lower() in [".jpg", ".jpeg", ".png", ".bmp", ".tiff"]:
+        pdf_filename = f"{base_name}.pdf"
+        target_path = os.path.join(actual_dir, pdf_filename)
+        success = create_searchable_pdf(source_path, target_path)
+        
+        # Tesseract çalışmazsa klasike resim kopyasına geri dön
+        if not success:
+            logger.warning("PDF oluşturulamadı, resim olarak kopyalanıyor...")
+            target_path = os.path.join(actual_dir, filename)
+            shutil.copy2(source_path, target_path)
+    else:
+        # Zaten PDF ise veya farklı bir dosya ise doğrudan kopyala
+        target_path = os.path.join(actual_dir, filename)
+        shutil.copy2(source_path, target_path)
 
-    shutil.copy2(source_path, target_path)
     return str(target_path)
 
 # ═══════════════════ PDF ═══════════════════

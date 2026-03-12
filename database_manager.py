@@ -131,7 +131,28 @@ class DatabaseManager:
             )
         ''')
 
-        # 8. FTS5 Tam Metin Arama Sanal Tablosu (v7.0)
+        # 8. QGIS Entegrasyon Görünümü (View) - v10.0
+        # If view exists, we should recreate it to ensure it uses the JOINS 
+        cursor.execute("DROP VIEW IF EXISTS vw_qgis_evraklar")
+        cursor.execute('''
+            CREATE VIEW vw_qgis_evraklar AS
+            SELECT 
+                d.id,
+                UPPER(TRIM(p.mahalle)) as mahalle,
+                UPPER(TRIM(p.ada)) as ada,
+                UPPER(TRIM(p.parsel)) as parsel,
+                d.doc_type,
+                d.subject,
+                d.extracted_date,
+                d.file_path,
+                REPLACE(d.file_path, '/', '\\') as win_file_path
+            FROM documents d
+            JOIN document_parcels dp ON d.id = dp.doc_id
+            JOIN parcels p ON dp.parcel_id = p.id
+            WHERE d.status != 'silindi'
+        ''')
+
+        # 9. FTS5 Tam Metin Arama Sanal Tablosu (v7.0)
         cursor.execute('''
             CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
                 doc_id UNINDEXED,

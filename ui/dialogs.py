@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QTextEdit, QMessageBox, QFrame,
-    QGridLayout, QComboBox, QGroupBox, QApplication
+    QGridLayout, QComboBox, QGroupBox, QApplication, QFileDialog
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QPixmap
@@ -16,6 +16,7 @@ from ui.theme import ACCENT, TEXT_PRIMARY, TEXT_SECONDARY, BG_PANEL, BG_INPUT, B
 from database_manager import DatabaseManager
 from utils import archive_document, get_resource_dir
 from config_manager import ConfigManager
+import openpyxl
 
 
 # ═══════════════════ ORTAK STİLLER ═══════════════════
@@ -459,12 +460,75 @@ class TableResultsDialog(QDialog):
 
         # Butonlar
         btn_row = QHBoxLayout()
-        btn_save = QPushButton(f"💾  Tümünü Kaydet ({len(self.rows)} kayıt)")
+        
+        btn_export = QPushButton(f"📊 Excel'e Aktar")
+        btn_export.setObjectName("btn_secondary")
+        btn_export.clicked.connect(self._export_excel)
+
+        btn_save = QPushButton(f"💾 Tümünü Kaydet ({len(self.rows)} kayıt)")
         btn_save.setObjectName("btn_accent")
         btn_save.clicked.connect(self._save_all)
+        
         btn_row.addStretch()
+        btn_row.addWidget(btn_export)
         btn_row.addWidget(btn_save)
         layout.addLayout(btn_row)
+
+    def _export_excel(self):
+        if not self.rows:
+            QMessageBox.warning(self, "Uyarı", "Dışa aktarılacak tablo verisi bulunamadı.")
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Excel Olarak Kaydet", "", "Excel Dosyası (*.xlsx)"
+        )
+        if not file_path:
+            return
+            
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Tablo Verileri"
+            
+            # Başlıkları yaz (1. Satır)
+            headers = ["Sıra", "Mahalle", "Ada", "Parsel", "Nitelik", "TC Kimlik", "Ad Soyad", "Baba Adı"]
+            ws.append(headers)
+            
+            # Başlıkları kalın yap
+            for col in range(1, len(headers) + 1):
+                ws.cell(row=1, column=col).font = openpyxl.styles.Font(bold=True)
+            
+            # Verileri yaz
+            for i, row in enumerate(self.rows):
+                ws.append([
+                    str(row.get("sira", i + 1)),
+                    str(row.get("mahalle", "")),
+                    str(row.get("ada", "")),
+                    str(row.get("parsel", "")),
+                    str(row.get("nitelik", "")),
+                    str(row.get("tc_kimlik", "")),
+                    str(row.get("ad_soyad", "")),
+                    str(row.get("baba_adi", ""))
+                ])
+                
+            # Otomatik sütun genişliği
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter # Get the column name
+                for cell in col:
+                    try: 
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(cell.value)
+                    except:
+                        pass
+                adjusted_width = (max_length + 2)
+                ws.column_dimensions[column].width = adjusted_width
+                
+            wb.save(file_path)
+            QMessageBox.information(self, "Başarılı", f"Veriler başarıyla Excel'e aktarıldı!\n\nDosya: {file_path}")
+            os.startfile(file_path) # Automatically open the saved file in Microsoft Excel
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Excel'e aktarım sırasında bir hata oluştu:\n{str(e)}")
 
     def _save_all(self):
         saved = 0

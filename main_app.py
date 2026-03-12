@@ -721,7 +721,29 @@ class MainWindow(QMainWindow):
             return
             
         try:
-            results = self.db.search_documents(query)
+            # Akıllı Harita Filtresi (Smart Geo-Search):
+            # Örn: "mahalle:KANDEMIR ada:32 parsel:2"
+            q_lower = query.lower()
+            if "mahalle:" in q_lower or "ada:" in q_lower or "sokak:" in q_lower:
+                mahalle = ada = parsel = sokak = free_text = None
+                tokens = query.split()
+                text_parts = []
+                for token in tokens:
+                    if token.lower().startswith("mahalle:"): mahalle = token.split(":", 1)[1].upper()
+                    elif token.lower().startswith("ada:"): ada = token.split(":", 1)[1]
+                    elif token.lower().startswith("parsel:"): parsel = token.split(":", 1)[1]
+                    elif token.lower().startswith("sokak:"): sokak = token.split(":", 1)[1].upper()
+                    else: text_parts.append(token)
+                
+                if text_parts:
+                    free_text = " ".join(text_parts)
+                
+                results = self.db.search_advanced(
+                    mahalle=mahalle, ada=ada, parsel=parsel, sokak=sokak, free_text=free_text
+                )
+            else:
+                # Standart Tam Metin Arama
+                results = self.db.search_documents(query)
             
             # Listeyi temizle
             self.thumb_list.clear()
