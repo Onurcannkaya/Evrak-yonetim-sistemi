@@ -14,6 +14,7 @@ venv/
 # Temp dosyalar
 temp_*
 *.tmp
+temp_previews/
 
 # IDE
 .vscode/
@@ -24,8 +25,15 @@ temp_*
 # Veritabanı (lokal)
 *.db
 
-# Ortam
+# Ortam ve API Anahtarı (GÜVENLİK)
 .env
+config.json
+
+# Build Çıktıları
+InnoOutput/
+
+# Arşiv (lokal veriler)
+evrak_arsiv/
 
 # OS
 Thumbs.db

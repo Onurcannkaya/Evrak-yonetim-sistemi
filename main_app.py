@@ -1,11 +1,12 @@
 """
-Sivas Belediyesi Evrak Yönetim Sistemi — NAPS2 Tarzı Arayüz
+Sivas Belediyesi Evrak Yönetim Sistemi — v6.0
 main_app.py — Ana uygulama penceresi
 """
 import sys
 import os
 import json
 import logging
+import webbrowser
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("google_genai").setLevel(logging.WARNING)
@@ -13,145 +14,24 @@ logging.getLogger("google_genai").setLevel(logging.WARNING)
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFrame, QMessageBox, QSplitter,
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QTextEdit, QToolBar, QListWidget, QListWidgetItem, QScrollArea,
-    QDialog, QFileDialog, QStatusBar, QSizePolicy, QProgressDialog
+    QFileDialog, QStatusBar, QSizePolicy, QProgressDialog, QDialog
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QPixmap, QPalette, QColor, QDragEnterEvent, QDropEvent, QIcon, QFont, QAction
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import (
+    QPixmap, QDragEnterEvent, QDropEvent, QFont, QAction,
+    QIcon,
+)
 
-from utils import archive_document, get_preview_image, generate_thumbnail
+from utils import archive_document, get_preview_image, generate_thumbnail, get_resource_dir
 from ai_engine import DocumentAnalyzer
 from database_manager import DatabaseManager
 from tools import BatchWorker, PDFMerger, ExcelExporter
 
-
-# ─────────────────────────── İŞ PARÇACIĞI ───────────────────────────
-class WorkerThread(QThread):
-    finished = pyqtSignal(dict)
-    error = pyqtSignal(str)
-
-    def __init__(self, document_path, analyzer):
-        super().__init__()
-        self.document_path = document_path
-        self.analyzer = analyzer
-
-    def run(self):
-        try:
-            result = self.analyzer.analyze_document(self.document_path)
-            if "error" in result and result["error"]:
-                self.error.emit(result["error"])
-            else:
-                self.finished.emit(result)
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-# ─────────────────────── SORGU DİALOGU ──────────────────────────────
-class SearchDialog(QDialog):
-    """Veritabanı arama penceresi."""
-
-    def __init__(self, db: DatabaseManager, parent=None):
-        super().__init__(parent)
-        self.db = db
-        self.setWindowTitle("Evrak Sorgulama")
-        self.setMinimumSize(900, 600)
-        self.setup_ui()
-        self.load_all()
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        # Başlık
-        title = QLabel("🔍  Evrak Arama ve Sorgulama")
-        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        title.setStyleSheet("color: #8dd35f;")
-        layout.addWidget(title)
-
-        # Arama Barı
-        bar = QHBoxLayout()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Mahalle, Ada, Parsel veya metin içeriği ile arayın...")
-        self.search_input.setStyleSheet(
-            "padding:10px; border:1px solid #555; border-radius:6px; "
-            "background:#2d2d2d; color:white; font-size:14px;"
-        )
-        self.search_input.returnPressed.connect(self.do_search)
-
-        btn_search = QPushButton("Ara")
-        btn_search.setStyleSheet(
-            "padding:10px 20px; background:#4e9a06; color:white; "
-            "border:none; border-radius:6px; font-weight:bold; font-size:14px;"
-        )
-        btn_search.clicked.connect(self.do_search)
-
-        btn_all = QPushButton("Tümünü Göster")
-        btn_all.setStyleSheet(
-            "padding:10px 20px; background:#555; color:white; "
-            "border:none; border-radius:6px; font-weight:bold; font-size:14px;"
-        )
-        btn_all.clicked.connect(self.load_all)
-
-        bar.addWidget(self.search_input, stretch=1)
-        bar.addWidget(btn_search)
-        bar.addWidget(btn_all)
-        layout.addLayout(bar)
-
-        # Sonuç Tablosu
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["ID", "Mahalle", "Ada", "Parsel", "Tarih"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setStyleSheet(
-            "QTableWidget { background:#2d2d2d; color:white; gridline-color:#444; font-size:13px; }"
-            "QHeaderView::section { background:#3a3a3a; color:white; padding:6px; border:1px solid #555; font-weight:bold; }"
-        )
-        self.table.itemDoubleClicked.connect(self.on_row_double_click)
-        layout.addWidget(self.table, stretch=1)
-
-        # Detay Kutusu
-        self.detail_txt = QTextEdit()
-        self.detail_txt.setReadOnly(True)
-        self.detail_txt.setMaximumHeight(180)
-        self.detail_txt.setStyleSheet(
-            "background:#2d2d2d; color:#ccc; border:1px solid #444; "
-            "border-radius:6px; padding:8px; font-size:13px;"
-        )
-        self.detail_txt.setPlaceholderText("Bir satıra çift tıklayarak detayları görüntüleyebilirsiniz...")
-        layout.addWidget(self.detail_txt)
-
-    def load_all(self):
-        results = self.db.search_advanced()
-        self._populate(results)
-
-    def do_search(self):
-        q = self.search_input.text().strip()
-        if not q:
-            self.load_all()
-            return
-        results = self.db.search_documents(q)
-        self._populate(results)
-
-    def _populate(self, results):
-        self.table.setRowCount(len(results))
-        for i, d in enumerate(results):
-            self.table.setItem(i, 0, QTableWidgetItem(str(d.get("id", ""))))
-            self.table.setItem(i, 1, QTableWidgetItem(str(d.get("p_mahalle") or d.get("mahalle", ""))))
-            self.table.setItem(i, 2, QTableWidgetItem(str(d.get("ada", ""))))
-            self.table.setItem(i, 3, QTableWidgetItem(str(d.get("parsel", ""))))
-            self.table.setItem(i, 4, QTableWidgetItem(str(d.get("extracted_date", ""))))
-            self.table.item(i, 0).setData(Qt.ItemDataRole.UserRole, d)
-
-    def on_row_double_click(self, item):
-        row = item.row()
-        data = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        if data:
-            raw = data.get("raw_text", "Metin bulunamadı")
-            fp = data.get("file_path", "")
-            self.detail_txt.setText(f"📄 Dosya: {fp}\n\n--- Okunan Metin ---\n{raw}")
+from ui.theme import apply_theme, ACCENT, TEXT_SECONDARY, BORDER, BG_CARD
+from ui.workers import WorkerThread, TableWorkerThread
+from ui.dialogs import SearchDialog, TableResultsDialog, DashboardDialog, LoginDialog, SettingsDialog
+from ui.widgets import ZoomableGraphicsView
 
 
 # ─────────────────────── ANA PENCERE ────────────────────────────────
@@ -164,7 +44,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 750)
         self.setAcceptDrops(True)
 
-        self._apply_theme()
+        apply_theme(self)
 
         # Motorlar
         try:
@@ -176,54 +56,44 @@ class MainWindow(QMainWindow):
         self.db = DatabaseManager()
 
         # Durum değişkenleri
-        self.loaded_files: list[str] = []      # Yüklenen dosya yolları
-        self.selected_index: int = -1          # Seçili dosyanın indeksi
-        self.ocr_results: dict[int, dict] = {} # indeks → OCR sonucu
+        self.logged_in_user = None
+        self.user_data = None
+        self.loaded_files: list[str] = []
+        self.selected_index: int = -1
+        self.ocr_results: dict[int, dict] = {}
+        self._cached_pixmap = None
+        self._cached_path = None
 
         self._build_toolbar()
         self._build_central()
         self._build_statusbar()
+        self._setup_shortcuts()
 
-    # ───────── TEMA ─────────
-    def _apply_theme(self):
-        pal = QPalette()
-        pal.setColor(QPalette.ColorRole.Window, QColor(32, 32, 32))
-        pal.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
-        pal.setColor(QPalette.ColorRole.Base, QColor(40, 40, 40))
-        pal.setColor(QPalette.ColorRole.AlternateBase, QColor(50, 50, 50))
-        pal.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
-        pal.setColor(QPalette.ColorRole.Button, QColor(50, 50, 50))
-        pal.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
-        pal.setColor(QPalette.ColorRole.Highlight, QColor(78, 154, 6))
-        pal.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
-        QApplication.instance().setPalette(pal)
+    def _setup_shortcuts(self):
+        """Klavye kısayollarını tanımlar (v7.0)"""
+        import PyQt6.QtGui as QtGui
+        
+        # Ctrl+S: Kaydet
+        shortcut_save = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+S"), self)
+        shortcut_save.activated.connect(self._action_save)
+        
+        # Enter: Listedeki bir sonraki elemana geç
+        shortcut_next = QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Return), self)
+        shortcut_next.activated.connect(self._select_next_item)
+        
+        # Enter (Numpad)
+        shortcut_next_num = QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Enter), self)
+        shortcut_next_num.activated.connect(self._select_next_item)
 
-        self.setStyleSheet("""
-            QMainWindow { background: #202020; }
-            QToolBar { background: #2a2a2a; border-bottom: 1px solid #444; spacing: 6px; padding: 4px; }
-            QToolBar QToolButton { 
-                color: white; background: transparent; border: none; 
-                padding: 8px 14px; font-size: 13px; border-radius: 4px;
-            }
-            QToolBar QToolButton:hover { background: #3d3d3d; }
-            QToolBar QToolButton:pressed { background: #4e9a06; }
-            QListWidget { background: #262626; border: none; outline: none; }
-            QListWidget::item { padding: 6px; border-bottom: 1px solid #333; }
-            QListWidget::item:selected { background: #4e9a06; }
-            QLineEdit, QTextEdit {
-                padding: 8px; border: 1px solid #555; border-radius: 5px;
-                background: #2d2d2d; color: white; font-size: 13px;
-            }
-            QLineEdit:focus, QTextEdit:focus { border-color: #4e9a06; }
-            QPushButton#btn_save {
-                padding: 12px; background: #4e9a06; color: white;
-                border: none; border-radius: 6px; font-size: 14px; font-weight: bold;
-            }
-            QPushButton#btn_save:hover { background: #61b510; }
-            QPushButton#btn_save:disabled { background: #444; color: #777; }
-            QSplitter::handle { background: #444; width: 2px; }
-            QStatusBar { background: #262626; color: #aaa; font-size: 12px; }
-        """)
+    def _select_next_item(self):
+        """Enter'a basıldığında listedeki bir sonraki evraka geçer."""
+        if self.thumb_list.count() > 0:
+            current = self.thumb_list.currentRow()
+            next_row = current + 1
+            if next_row < self.thumb_list.count():
+                self.thumb_list.setCurrentRow(next_row)
+            else:
+                self._set_status("Son evraktasınız.", "#ffc107")
 
     # ───────── ARAÇ ÇUBUĞU ─────────
     def _build_toolbar(self):
@@ -233,55 +103,52 @@ class MainWindow(QMainWindow):
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.addToolBar(tb)
 
-        self.act_import = QAction("📂  İçe Aktar", self)
-        self.act_import.setToolTip("Belge dosyalarını içe aktarır (PDF / JPEG)")
-        self.act_import.triggered.connect(self._action_import)
-        tb.addAction(self.act_import)
+        actions = [
+            ("📂  İçe Aktar", "Belge dosyalarını içe aktarır (PDF / JPEG)", self._action_import),
+            None,  # separator
+            ("🤖  OCR Yap", "Seçili belgeyi Gemini AI ile analiz eder", self._action_ocr),
+            ("📊  Tablo OCR", "Seçili belgedeki tablo verilerini çıkarır", self._action_table_ocr),
+            ("💾  Kaydet", "Analiz sonucunu veritabanına ve arşive kaydeder", self._action_save),
+            None,
+            ("🔍  Sorgula", "Kayıtlı belgelerde arama yapar", self._action_search),
+            ("📊  Dashboard", "Sistem istatistiklerini gösterir", self._action_dashboard),
+            None,
+            ("⚙️  Ayarlar", "API Anahtarı ve sistem ayarları", self._action_settings),
+            None,
+            ("🗑️  Sil", "Seçili belgeyi listeden kaldırır", self._action_delete),
+            None,
+            ("📁  Toplu İşle", "Bir klasördeki tüm belgeleri otomatik analiz eder", self._action_batch),
+            ("📄  PDF Birleştir", "Listedeki belgeleri tek bir PDF dosyasına birleştirir", self._action_pdf_merge),
+            ("📈  Excel Aktar", "Veritabanındaki kayıtları Excel dosyasına aktarır", self._action_excel),
+        ]
 
-        tb.addSeparator()
+        for item in actions:
+            if item is None:
+                tb.addSeparator()
+            else:
+                text, tip, handler = item
+                act = QAction(text, self)
+                act.setToolTip(tip)
+                act.triggered.connect(handler)
+                tb.addAction(act)
 
-        self.act_ocr = QAction("🤖  OCR Yap", self)
-        self.act_ocr.setToolTip("Seçili belgeyi Gemini AI ile analiz eder")
-        self.act_ocr.triggered.connect(self._action_ocr)
-        tb.addAction(self.act_ocr)
+        # Global Search Bar (Sağa Yaslı)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        tb.addWidget(spacer)
 
-        self.act_save = QAction("💾  Kaydet", self)
-        self.act_save.setToolTip("Analiz sonucunu veritabanına ve arşive kaydeder")
-        self.act_save.triggered.connect(self._action_save)
-        tb.addAction(self.act_save)
+        self.global_search_input = QLineEdit()
+        self.global_search_input.setPlaceholderText("🔍  Hızlı Arama (Tüm kelimeler)...")
+        self.global_search_input.setMinimumWidth(250)
+        self.global_search_input.setStyleSheet("padding: 6px; border-radius: 6px;")
+        self.global_search_input.returnPressed.connect(self._action_global_search)
+        tb.addWidget(self.global_search_input)
 
-        tb.addSeparator()
-
-        self.act_search = QAction("🔍  Sorgula", self)
-        self.act_search.setToolTip("Kayıtlı belgelerde arama yapar")
-        self.act_search.triggered.connect(self._action_search)
-        tb.addAction(self.act_search)
-
-        tb.addSeparator()
-
-        self.act_delete = QAction("🗑️  Sil", self)
-        self.act_delete.setToolTip("Seçili belgeyi listeden kaldırır")
-        self.act_delete.triggered.connect(self._action_delete)
-        tb.addAction(self.act_delete)
-
-        tb.addSeparator()
-
-        self.act_batch = QAction("📁  Toplu İşle", self)
-        self.act_batch.setToolTip("Bir klasördeki tüm belgeleri otomatik analiz eder")
-        self.act_batch.triggered.connect(self._action_batch)
-        tb.addAction(self.act_batch)
-
-        tb.addSeparator()
-
-        self.act_pdf_merge = QAction("📑  PDF Birleştir", self)
-        self.act_pdf_merge.setToolTip("Listedeki belgeleri tek bir PDF dosyasına birleştirir")
-        self.act_pdf_merge.triggered.connect(self._action_pdf_merge)
-        tb.addAction(self.act_pdf_merge)
-
-        self.act_excel = QAction("📊  Excel Aktar", self)
-        self.act_excel.setToolTip("Veritabanındaki kayıtları Excel dosyasına aktarır")
-        self.act_excel.triggered.connect(self._action_excel)
-        tb.addAction(self.act_excel)
+        self.btn_global_search = QPushButton("Ara")
+        self.btn_global_search.setStyleSheet("padding: 6px 12px; border-radius: 6px; background-color: #2563eb; color: white; font-weight: bold;")
+        self.btn_global_search.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_global_search.clicked.connect(self._action_global_search)
+        tb.addWidget(self.btn_global_search)
 
     # ───────── MERKEZİ LAYOUT ─────────
     def _build_central(self):
@@ -296,7 +163,7 @@ class MainWindow(QMainWindow):
 
         lbl_docs = QLabel("Belgeler")
         lbl_docs.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        lbl_docs.setStyleSheet("color: #8dd35f; padding: 4px;")
+        lbl_docs.setStyleSheet(f"color: {ACCENT}; padding: 4px;")
         left_layout.addWidget(lbl_docs)
 
         self.thumb_list = QListWidget()
@@ -308,7 +175,7 @@ class MainWindow(QMainWindow):
 
         hint = QLabel("Dosyaları buraya sürükleyebilirsiniz")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint.setStyleSheet("color: #666; font-size: 11px; padding: 4px;")
+        hint.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px; padding: 4px;")
         left_layout.addWidget(hint)
 
         splitter.addWidget(left)
@@ -319,27 +186,19 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(4, 8, 8, 8)
         right_layout.setSpacing(8)
 
-        # Üst: Büyük önizleme
-        self.preview_scroll = QScrollArea()
-        self.preview_scroll.setWidgetResizable(True)
-        self.preview_scroll.setStyleSheet("QScrollArea { border: 1px solid #444; border-radius: 6px; background: #1a1a1a; }")
-        
-        self.preview_label = QLabel("Önizleme alanı — İçe aktar veya sürükle-bırak ile belge ekleyin")
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setStyleSheet("color: #666; font-size: 14px;")
-        self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.preview_scroll.setWidget(self.preview_label)
-        right_layout.addWidget(self.preview_scroll, stretch=3)
+        # Üst: Büyük Önizleme (ZoomableGraphicsView - v7.0)
+        self.preview_view = ZoomableGraphicsView()
+        right_layout.addWidget(self.preview_view, stretch=3)
 
         # Alt: Özellikler Paneli
         props = QFrame()
-        props.setStyleSheet("QFrame { background: #272727; border: 1px solid #3a3a3a; border-radius: 8px; padding: 10px; }")
+        props.setObjectName("props_frame")
         props_layout = QVBoxLayout(props)
-        props_layout.setSpacing(6)
+        props_layout.setSpacing(8)
 
         prop_title = QLabel("Evrak Bilgileri")
-        prop_title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        prop_title.setStyleSheet("color: #8dd35f; border: none;")
+        prop_title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        prop_title.setStyleSheet(f"color: {ACCENT}; border: none;")
         props_layout.addWidget(prop_title)
 
         row1 = QHBoxLayout()
@@ -347,7 +206,7 @@ class MainWindow(QMainWindow):
         for key, label_text in [("mahalle", "Mahalle"), ("ada", "Ada")]:
             col = QVBoxLayout()
             lbl = QLabel(label_text)
-            lbl.setStyleSheet("color: #aaa; font-size: 12px; font-weight: bold; border: none;")
+            lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; font-weight: bold; border: none;")
             txt = QLineEdit()
             txt.setPlaceholderText(label_text)
             self.fields[key] = txt
@@ -360,7 +219,7 @@ class MainWindow(QMainWindow):
         for key, label_text in [("parsel", "Parsel"), ("tarih", "Tarih")]:
             col = QVBoxLayout()
             lbl = QLabel(label_text)
-            lbl.setStyleSheet("color: #aaa; font-size: 12px; font-weight: bold; border: none;")
+            lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; font-weight: bold; border: none;")
             txt = QLineEdit()
             txt.setPlaceholderText(label_text)
             self.fields[key] = txt
@@ -370,7 +229,7 @@ class MainWindow(QMainWindow):
         props_layout.addLayout(row2)
 
         lbl_raw = QLabel("Okunan Metin")
-        lbl_raw.setStyleSheet("color: #aaa; font-size: 12px; font-weight: bold; border: none;")
+        lbl_raw.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; font-weight: bold; border: none;")
         props_layout.addWidget(lbl_raw)
 
         self.txt_raw = QTextEdit()
@@ -423,14 +282,17 @@ class MainWindow(QMainWindow):
         if paths:
             self._add_files(paths)
 
-    # ═══════════ TOOLBAR AKSIYONLARI ═══════════
+    # ═══════════ TOOLBAR AKSİYONLARI ═══════════
     def _action_import(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "Belge Seç", "",
-            "Belge Dosyaları (*.pdf *.jpg *.jpeg *.png *.bmp *.tiff *.tif)"
-        )
-        if files:
-            self._add_files(files)
+        try:
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "Belge Seç", "",
+                "Belge Dosyaları (*.pdf *.jpg *.jpeg *.png *.bmp *.tiff *.tif)"
+            )
+            if files:
+                self._add_files(files)
+        except Exception as e:
+            QMessageBox.critical(self, "İçe Aktarma Hatası", f"Dosyalar seçilirken hata oluştu:\n{e}")
 
     def _action_ocr(self):
         if self.selected_index < 0 or self.selected_index >= len(self.loaded_files):
@@ -448,6 +310,26 @@ class MainWindow(QMainWindow):
         self.worker.error.connect(self._on_ocr_error)
         self.worker.start()
 
+    def _on_ocr_done(self, result: dict):
+        if result.get("error"):
+            self._set_status(f"❌ OCR hatası: {str(result['error'])[:50]}...", "#ff4757")
+            if self.selected_index >= 0:
+                self._update_item_badge(self.selected_index, "failed")
+            QMessageBox.critical(self, "OCR Hatası", f"Belge analiz edilirken sorun oluştu:\n{result['error']}")
+            return
+            
+        self._set_status("✅ OCR tamamlandı!", "#00d47e")
+        if self.selected_index >= 0:
+            self.ocr_results[self.selected_index] = result
+            self._update_item_badge(self.selected_index, "approved" if result.get("ocr_details", {}).get("engine") == "gemini-2.5-flash" else "needs_review")
+        self._fill_properties(result)
+
+    def _on_ocr_error(self, msg: str):
+        self._set_status("❌ OCR hatası!", "#ff4757")
+        if self.selected_index >= 0:
+            self._update_item_badge(self.selected_index, "failed")
+        QMessageBox.critical(self, "OCR Hatası", f"Belge analiz edilirken sorun oluştu:\n{msg}")
+
     def _action_save(self):
         if self.selected_index < 0:
             return
@@ -462,6 +344,16 @@ class MainWindow(QMainWindow):
             return
 
         fp = self.loaded_files[self.selected_index]
+
+        # Duplikasyon kontrolü
+        dup = self.db.check_duplicate(fp)
+        if dup:
+            reply = QMessageBox.question(self, "Duplikasyon Uyarısı",
+                f"Bu dosya daha önce işlenmiş (ID: {dup.get('id')}).\nYine de kaydetmek istiyor musunuz?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.No:
+                return
+
         try:
             target = archive_document(fp, mahalle, ada)
             doc_data = {
@@ -477,14 +369,79 @@ class MainWindow(QMainWindow):
             }
             self.db.add_document(doc_data)
             QMessageBox.information(self, "Başarılı", "Evrak başarıyla arşivlendi ve veritabanına kaydedildi!")
-            self._set_status("✅ Evrak arşivlendi.", "#8dd35f")
-            # İşlenen dosyayı listeden kaldır
+            self._set_status("✅ Evrak arşivlendi.", "#00d47e")
+            self._action_map()
             self._remove_current()
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Arşivleme başarısız:\n{e}")
 
+    def _action_delete(self):
+        """Seçili belgeyi tablodan/listeden siler"""
+        if self.selected_index < 0 or self.selected_index >= len(self.loaded_files):
+            QMessageBox.warning(self, "Uyarı", "Silmek için bir belge seçin.")
+            return
+
+        item = self.thumb_list.currentItem()
+        if not item: return
+
+        reply = QMessageBox.question(
+            self, "Onay", "Seçili belgeyi uygulamadan kaldırmak istediğinize emin misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.loaded_files.pop(self.selected_index)
+            if self.selected_index in self.ocr_results:
+                del self.ocr_results[self.selected_index]
+            self._fill_thumbnails()
+            self._set_status("Belge silindi.")
+            
+    def _action_settings(self):
+        """Ayarlar diyaloğunu açar"""
+        dialog = SettingsDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Restart Analyzer with new key
+            try:
+                self.analyzer = DocumentAnalyzer()
+                self._set_status("Ayarlar güncellendi: Yeni API Anahtarı aktif.")
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"API Anahtarı geçersiz veya motor başlatılamadı:\n{e}")
+                self.analyzer = None
+
+    def _action_table_ocr(self):
+        """Tablo OCR — Seçili belgedeki tablo verilerini çıkarır."""
+        if self.selected_index < 0 or self.selected_index >= len(self.loaded_files):
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir belge seçin.")
+            return
+        if not self.analyzer:
+            QMessageBox.warning(self, "Uyarı", "AI Motoru aktif değil.")
+            return
+
+        fp = self.loaded_files[self.selected_index]
+        self._set_status("📊 Tablo analiz ediliyor... Bu işlem 30-60 saniye sürebilir.", "#ffaa00")
+
+        self._table_worker = TableWorkerThread(fp, self.analyzer)
+        self._table_worker.finished.connect(self._on_table_ocr_done)
+        self._table_worker.error.connect(self._on_ocr_error)
+        self._table_worker.start()
+
+    def _on_table_ocr_done(self, result: dict):
+        """Tablo OCR tamamlandığında sonuçları göster."""
+        row_count = result.get("row_count", 0)
+        self._set_status(f"✅ Tablo OCR tamamlandı! {row_count} satır bulundu.", "#00d47e")
+
+        if row_count > 0:
+            dlg = TableResultsDialog(result, self.db, self)
+            dlg.exec()
+        else:
+            QMessageBox.information(self, "Tablo OCR", "Belgede tablo verisi bulunamadı.")
+            self._fill_properties(result)
+
     def _action_search(self):
         dlg = SearchDialog(self.db, self)
+        dlg.exec()
+
+    def _action_dashboard(self):
+        dlg = DashboardDialog(self.db, self)
         dlg.exec()
 
     def _action_delete(self):
@@ -507,10 +464,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Bilgi", "Seçilen klasörde desteklenen dosya bulunamadı.")
             return
 
-        # Dosyaları listeye ekle
         self._add_files(files)
 
-        # İlerleme dialogu
         self.batch_progress = QProgressDialog("Toplu işleme başlatılıyor...", "İptal", 0, len(files), self)
         self.batch_progress.setWindowTitle("Toplu İşleme")
         self.batch_progress.setMinimumDuration(0)
@@ -530,11 +485,11 @@ class MainWindow(QMainWindow):
         self._set_status(f"🤖 Toplu İşleme: {current}/{total} — {filename}", "#ffaa00")
 
     def _on_batch_item_done(self, idx, result):
-        # Dosyanın listemizdeki konumunu bul ve OCR sonucunu kaydet
         fp = result.get("_source_file", "")
         if fp in self.loaded_files:
             list_idx = self.loaded_files.index(fp)
             self.ocr_results[list_idx] = result
+            self._update_item_badge(list_idx, "approved" if result.get("ocr_details", {}).get("engine") == "gemini-2.5-flash" else "needs_review")
 
     def _on_batch_all_done(self, results):
         self.batch_progress.close()
@@ -542,13 +497,14 @@ class MainWindow(QMainWindow):
         fail = len(results) - success
         QMessageBox.information(self, "Toplu İşleme Tamamlandı",
             f"Toplam: {len(results)}\n✅ Başarılı: {success}\n❌ Başarısız: {fail}")
-        self._set_status(f"✅ Toplu işleme tamamlandı: {success}/{len(results)} başarılı.", "#8dd35f")
-        # Mevcut seçimi yenile
+        self._set_status(f"✅ Toplu işleme tamamlandı: {success}/{len(results)} başarılı.", "#00d47e")
         if self.selected_index >= 0:
             self._on_thumb_selected(self.selected_index)
 
     def _on_batch_error(self, idx, msg):
         logging.warning(f"Toplu İşleme Hata [Dosya #{idx}]: {msg}")
+        if idx < len(self.loaded_files):
+            self._update_item_badge(idx, "failed")
 
     def _action_pdf_merge(self):
         """Listedeki dosyaları tek bir PDF'e birleştirir."""
@@ -561,7 +517,7 @@ class MainWindow(QMainWindow):
         try:
             PDFMerger.merge(self.loaded_files, out)
             QMessageBox.information(self, "Başarılı", f"PDF dosyası oluşturuldu:\n{out}")
-            self._set_status(f"📑 PDF birleştirildi: {out}", "#8dd35f")
+            self._set_status(f"📄 PDF birleştirildi: {out}", "#00d47e")
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"PDF birleştirme başarısız:\n{e}")
 
@@ -575,44 +531,105 @@ class MainWindow(QMainWindow):
             columns = ["id", "p_mahalle", "ada", "parsel", "extracted_date", "raw_text"]
             ExcelExporter.export(data, out, columns)
             QMessageBox.information(self, "Başarılı", f"Excel raporu oluşturuldu:\n{out}")
-            self._set_status(f"📊 Excel aktarıldı: {out}", "#8dd35f")
+            self._set_status(f"📈 Excel aktarıldı: {out}", "#00d47e")
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Excel aktarımı başarısız:\n{e}")
 
     def _action_map(self):
-        """Haritada Göster — CBS entegrasyonu hazırlığı."""
+        """Haritada Göster — Sivas Belediyesi CBS Entegrasyonu."""
         mahalle = self.fields["mahalle"].text().strip()
         ada = self.fields["ada"].text().strip()
         parsel = self.fields["parsel"].text().strip()
         if not ada:
             QMessageBox.information(self, "Bilgi", "Haritada göstermek için en az Ada bilgisi gereklidir.")
             return
-        log_msg = f"🗺️ CBS HAZIRLIK — Mahalle: {mahalle}, Ada: {ada}, Parsel: {parsel}"
+            
+        # Sivas Kent Rehberi (Özel URL Formatı / Varsayılan Format)
+        # Örnek gerçeğe yakın format: https://kentrehberi.sivas.bel.tr/map?mahalle={}&ada={}&parsel={}
+        import urllib.parse
+        base_url = "https://kentrehberi.sivas.bel.tr/map"
+        params = {"ada": ada}
+        if mahalle: params["mahalle"] = mahalle
+        if parsel: params["parsel"] = parsel
+            
+        url = f"{base_url}?{urllib.parse.urlencode(params)}"
+        
+        log_msg = f"🗺️ CBS SORGUSU — Mahalle: {mahalle}, Ada: {ada}, Parsel: {parsel} | URL: {url}"
         logging.info(log_msg)
         self._set_status(log_msg, "#55aaff")
-        QMessageBox.information(self, "Harita Bilgisi",
-            f"Koordinat bilgisi loga kaydedildi.\n\n"
-            f"Mahalle: {mahalle}\nAda: {ada}\nParsel: {parsel}\n\n"
-            f"(CBS entegrasyonu yakında eklenecektir.)")
+        
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Tarayıcı açılamadı:\n{e}")
 
     # ═══════════ DOSYA YÖNETİMİ ═══════════
+    def _create_badged_icon(self, thumb_path: str, status: str = "pending") -> QIcon:
+        """Küçük resim üzerine durum rozeti (badge) çizer."""
+        from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
+        
+        pixmap = QPixmap(thumb_path)
+        if pixmap.isNull():
+            return QIcon()
+            
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Durum renkleri
+        colors = {
+            "pending": QColor(245, 158, 11),  # Amber/Sarı
+            "approved": QColor(16, 185, 129), # Zümrüt/Yeşil
+            "needs_review": QColor(59, 130, 246), # Mavi
+            "failed": QColor(239, 68, 68)     # Kırmızı
+        }
+        
+        color = colors.get(status, QColor(100, 100, 100))
+        
+        # Sağ üst köşeye çiz
+        radius = 12
+        margin = 4
+        x = pixmap.width() - (radius * 2) - margin
+        y = margin
+        
+        # Gölge/Dış çerçeve
+        painter.setPen(QPen(QColor(0, 0, 0, 150), 2))
+        painter.setBrush(QBrush(color))
+        painter.drawEllipse(x, y, radius * 2, radius * 2)
+        
+        painter.end()
+        return QIcon(pixmap)
+
+    def _update_item_badge(self, row: int, status: str):
+        """Listedeki öğenin simgesini durum rozeti ile günceller."""
+        if 0 <= row < self.thumb_list.count():
+            item = self.thumb_list.item(row)
+            thumb = generate_thumbnail(self.loaded_files[row])
+            item.setIcon(self._create_badged_icon(thumb, status))
+
     def _add_files(self, paths: list[str]):
-        for fp in paths:
-            if fp in self.loaded_files:
-                continue
-            self.loaded_files.append(fp)
-            thumb = generate_thumbnail(fp)
-            item = QListWidgetItem()
-            item.setIcon(QIcon(thumb))
-            item.setText(os.path.basename(fp))
-            item.setToolTip(fp)
-            self.thumb_list.addItem(item)
+        try:
+            for fp in paths:
+                if fp in self.loaded_files:
+                    continue
+                self.loaded_files.append(fp)
+                thumb = generate_thumbnail(fp)
+                item = QListWidgetItem()
+                item.setIcon(self._create_badged_icon(thumb, "pending"))
+                item.setText(os.path.basename(fp))
+                item.setToolTip(fp)
+                self.thumb_list.addItem(item)
+                
+                # Başlangıçta ocr_results dictionary'sine boş değer atma
+                list_idx = len(self.loaded_files) - 1
+                if list_idx not in self.ocr_results:
+                    pass # Sadece listeye eklendi
 
-        # İlk eklenen dosyayı seç
-        if self.thumb_list.count() > 0 and self.selected_index < 0:
-            self.thumb_list.setCurrentRow(0)
+            if self.thumb_list.count() > 0 and self.selected_index < 0:
+                self.thumb_list.setCurrentRow(0)
 
-        self._set_status(f"📁 {len(self.loaded_files)} belge yüklendi.", "#8dd35f")
+            self._set_status(f"📁 {len(self.loaded_files)} belge yüklendi.", "#00d47e")
+        except Exception as e:
+            QMessageBox.critical(self, "Dosya Yükleme Hatası", f"Dosyalar yüklenirken hata oluştu:\n{e}")
 
     def _remove_current(self):
         if self.selected_index < 0:
@@ -620,7 +637,6 @@ class MainWindow(QMainWindow):
         idx = self.selected_index
         self.loaded_files.pop(idx)
         self.ocr_results.pop(idx, None)
-        # OCR sonuçlarının indekslerini güncelle
         new_ocr = {}
         for k, v in self.ocr_results.items():
             if k > idx:
@@ -631,32 +647,31 @@ class MainWindow(QMainWindow):
 
         self.thumb_list.takeItem(idx)
         self.selected_index = -1
+        self._cached_pixmap = None
+        self._cached_path = None
         self._clear_properties()
-        self.preview_label.clear()
-        self.preview_label.setText("Önizleme alanı")
+        self.preview_view.scene.clear()
+        
         if self.thumb_list.count() > 0:
             self.thumb_list.setCurrentRow(min(idx, self.thumb_list.count() - 1))
 
-    # ═══════════ SEÇIM & ÖNİZLEME ═══════════
+    # ═══════════ SEÇİM & ÖNİZLEME ═══════════
     def _on_thumb_selected(self, row: int):
         self.selected_index = row
         if row < 0 or row >= len(self.loaded_files):
             return
         fp = self.loaded_files[row]
 
-        # Büyük önizleme
+        # Büyük önizleme (cache'li)
         try:
             preview = get_preview_image(fp)
-            pix = QPixmap(preview)
-            if not pix.isNull():
-                scaled = pix.scaled(
-                    self.preview_scroll.size() * 0.95,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                self.preview_label.setPixmap(scaled)
+            if self._cached_path != preview:
+                self._cached_pixmap = QPixmap(preview)
+                self._cached_path = preview
+            if self._cached_pixmap and not self._cached_pixmap.isNull():
+                self.preview_view.set_image(self._cached_pixmap)
         except Exception:
-            self.preview_label.setText("Önizleme yüklenemedi")
+            self.preview_view.scene.clear()
 
         # OCR sonuçları varsa doldur
         if row in self.ocr_results:
@@ -664,16 +679,65 @@ class MainWindow(QMainWindow):
         else:
             self._clear_properties()
 
-    # ═══════════ OCR CALLBACK ═══════════
-    def _on_ocr_done(self, result: dict):
-        self._set_status("✅ OCR tamamlandı!", "#8dd35f")
-        if self.selected_index >= 0:
-            self.ocr_results[self.selected_index] = result
-        self._fill_properties(result)
+        # Update Save Button State (Eğer db_record ise pasif yap)
+        item = self.thumb_list.item(row)
+        if item and item.data(Qt.ItemDataRole.UserRole) == "db_record":
+            self.btn_save.setEnabled(False)
+            self.btn_save.setText("Kayıtlı Evrak")
+            # Butonu güncellemek yerine readonly yapabilir
+        elif self.user_data and self.user_data.get('role') != 'admin':
+            self.btn_save.setEnabled(False)
+            self.btn_save.setText("Yetki Yok")
+        else:
+            self.btn_save.setEnabled(True)
+            self.btn_save.setText("💾 Kaydet")
 
-    def _on_ocr_error(self, msg: str):
-        self._set_status("❌ OCR hatası!", "#ff5555")
-        QMessageBox.critical(self, "OCR Hatası", f"Belge analiz edilirken sorun oluştu:\n{msg}")
+    def _action_global_search(self):
+        """Global arama barı üzerinden FTS5 ile arama yapar ve sol listeyi günceller."""
+        query = self.global_search_input.text().strip()
+        if not query:
+            self._set_status("Arama kutusu boş.", "#ffc107")
+            return
+            
+        try:
+            results = self.db.search_documents(query)
+            
+            # Listeyi temizle
+            self.thumb_list.clear()
+            self.loaded_files.clear()
+            self.ocr_results.clear()
+            self.preview_view.scene.clear()
+            self._clear_properties()
+            
+            if not results:
+                self._set_status(f"'{query}' için sonuç bulunamadı.", "#ffc107")
+                return
+
+            list_index = 0
+            for r in results:
+                fp = r.get("image_path") or r.get("file_path")
+                if fp and os.path.exists(fp):
+                    self.loaded_files.append(fp)
+                    self.ocr_results[list_index] = r
+                    list_index += 1
+                    
+                    item = QListWidgetItem(f"[{r.get('ada')}/{r.get('parsel')}] - {os.path.basename(fp)}")
+                    item.setData(Qt.ItemDataRole.UserRole, "db_record")
+                    
+                    icon_path = os.path.join(get_resource_dir(), "assets", "badge_approved.png")
+                    if os.path.exists(icon_path):
+                        item.setIcon(QIcon(icon_path))
+
+                    self.thumb_list.addItem(item)
+                    
+            self._set_status(f"FTS5 Arama Tamamlandı: {len(self.loaded_files)} sonuç listelendi.", "#00d47e")
+            
+            if self.thumb_list.count() > 0:
+                self.thumb_list.setCurrentRow(0)
+                
+        except Exception as e:
+            logging.error(f"Arama Hatası: {e}")
+            self._set_status(f"Arama Hatası: {e}", ERROR)
 
     # ═══════════ YARDIMCI ═══════════
     def _fill_properties(self, data: dict):
@@ -682,7 +746,14 @@ class MainWindow(QMainWindow):
         self.fields["parsel"].setText(data.get("parsel", ""))
         self.fields["tarih"].setText(data.get("tarih", ""))
         self.txt_raw.setText(data.get("raw_text", ""))
-        self.btn_save.setEnabled(True)
+        
+        # RBAC Check (v7.0)
+        if self.logged_in_user and self.logged_in_user.get("role") == "admin":
+            self.btn_save.setEnabled(True)
+        else:
+            self.btn_save.setEnabled(False)
+            self.btn_save.setToolTip("Kaydetmek için Admin yetkisi gereklidir.")
+            
         self.btn_map.setEnabled(True)
 
     def _clear_properties(self):
@@ -692,31 +763,48 @@ class MainWindow(QMainWindow):
         self.btn_save.setEnabled(False)
         self.btn_map.setEnabled(False)
 
-    def _set_status(self, text: str, color: str = "#aaa"):
+    def _set_status(self, text: str, color: str = "#8a8a96"):
         self.status_msg.setText(text)
         self.status_msg.setStyleSheet(f"color: {color}; font-weight: bold;")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self.selected_index >= 0 and self.preview_label.pixmap() and not self.preview_label.pixmap().isNull():
-            fp = self.loaded_files[self.selected_index]
-            try:
-                preview = get_preview_image(fp)
-                pix = QPixmap(preview)
-                scaled = pix.scaled(
-                    self.preview_scroll.size() * 0.95,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                self.preview_label.setPixmap(scaled)
-            except Exception:
-                pass
+        if self.selected_index >= 0 and self._cached_pixmap and not self._cached_pixmap.isNull():
+            self.preview_view.fitInView(self.preview_view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
 
 # ═══════════ GİRİŞ NOKTASI ═══════════
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 10))
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    
+    # 1. Veritabanı (Login için gerekli)
+    db = DatabaseManager()
+    
+    # 2. Login Ekranı (v7.0)
+    login = LoginDialog(db)
+    if login.exec() == QDialog.DialogCode.Accepted:
+        user = login.user_data
+        
+        # 3. Ana Pencere
+        window = MainWindow()
+        window.db = db # Aynı instance
+        window.logged_in_user = user
+        window.user_data = user
+        
+        # Başlık, İkon ve Statüs
+        window.setWindowTitle(f"Sivas Belediyesi — Evrak Yönetim Sistemi (Kullanıcı: {user['username']} - Rol: {user['role'].upper()})")
+        app_icon_path = os.path.join(get_resource_dir(), "assets", "icon.ico")
+        if os.path.exists(app_icon_path):
+            window.setWindowIcon(QIcon(app_icon_path))
+        window._set_status(f"Hoş geldiniz, {user['username']}. Oturum açıldı.")
+        
+        # RBAC Toplu İşlemi Gizle (İsteğe bağlı, personel yetkisi yoksa toolbar modify edilebilir)
+        if user['role'] != 'admin':
+            pass # Currently saving is blocked in _fill_properties
+            
+        window.show()
+        sys.exit(app.exec())
+    else:
+        # Uygulama kapatıldı
+        sys.exit(0)

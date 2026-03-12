@@ -1,8 +1,23 @@
 import os
+import sys
 import shutil
 from pathlib import Path
 from PIL import Image
 import fitz  # PyMuPDF
+
+def get_base_dir() -> str:
+    """Uygulamanın çalıştığı ana dizini döndürür (PyInstaller OneDir uyumlu)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(os.path.dirname(__file__))
+
+def get_resource_dir() -> str:
+    """Okunabilir asset/resource dosyalarının yerini döndürür."""
+    if getattr(sys, 'frozen', False):
+        if hasattr(sys, '_MEIPASS'):
+            return sys._MEIPASS
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(os.path.dirname(__file__))
 
 def ensure_dir(path: str) -> None:
     """Belirtilen dizinin var olduğundan emin olur, yoksa oluşturur."""
