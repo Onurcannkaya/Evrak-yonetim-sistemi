@@ -5,7 +5,7 @@
 
 AppId={{8A7B6C5D-4E3F-2A1B-9C0D-E8F7A6B5C4D3}}
 AppName=Sivas Belediyesi Evrak Yönetim Sistemi
-AppVersion=8.0
+AppVersion=10.0
 AppPublisher=Sivas Belediyesi Bilgi İşlem
 AppPublisherURL=https://www.sivas.bel.tr/
 AppSupportURL=https://www.sivas.bel.tr/
@@ -18,7 +18,7 @@ DisableProgramGroupPage=yes
 
 ; Çıkış ayarları
 OutputDir=.\InnoOutput
-OutputBaseFilename=SivasBelediyesiDMS_Kurulum_v8.0
+OutputBaseFilename=SivasBelediyesiDMS_Kurulum_v10.0
 SetupIconFile=assets\icon.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
